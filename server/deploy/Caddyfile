@@ -45,3 +45,11 @@ www.{$DOMAIN} {
 
 	reverse_proxy api:8000
 }
+
+# Extra sites for other apps sharing this host. Each app drops one *.caddy
+# file into /opt/caddy-sites on the server (mounted at /etc/caddy/sites,
+# see docker-compose.prod.yml); this line pulls them all in. A glob that
+# matches nothing is fine, so the stack still starts with the folder empty.
+# After adding or changing a file:
+#   docker exec tradingagents-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+import /etc/caddy/sites/*.caddy

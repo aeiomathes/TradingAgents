@@ -80,6 +80,8 @@ services:
       - "443:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Per-app site snippets from other stacks on this host (e.g. Nventorium)
+      - /opt/caddy-sites:/etc/caddy/sites:ro
       # Let's Encrypt certs + Caddy's own state — persisted so a redeploy
       # doesn't force re-issuing certs (and risk Let's Encrypt's rate
       # limits) every time this container is recreated.
