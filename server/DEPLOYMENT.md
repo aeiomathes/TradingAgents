@@ -27,10 +27,13 @@ app-level JWT.
 
 ## 1. Provision the Linode instance
 
-A Shared 4GB instance is the practical minimum — an analysis run spawns
+A Shared 4GB instance gives comfortable headroom — an analysis run spawns
 an LLM-agent pipeline (several Claude/GPT calls per run) as a subprocess,
-which is the real memory/CPU cost here, not the web serving itself.
-Ubuntu 24.04 LTS is a safe default image.
+which is the real memory/CPU cost here, not the web serving itself. The
+live deployment actually runs on a 1GB Nanode shared with another app
+(see [SHARED_HOST.md](./SHARED_HOST.md)), which works for single runs but
+is tight: concurrent runs can trigger OOM kills. Debian 12 or Ubuntu 24.04
+LTS are both fine images (the live host is Debian 12).
 
 Once created, note its public IPv4 address — you'll need it for DNS.
 
@@ -66,7 +69,13 @@ git checkout deploy-caddy   # <-- required until this merges to main; a plain
 cd server
 chmod +x scripts/deploy.sh
 sudo ./scripts/deploy.sh
+sudo mkdir -p /opt/caddy-sites   # snippets folder other apps on this host use; see SHARED_HOST.md
 ```
+
+If you've disabled SSH password logins on the box (recommended), make sure
+your key works for the account you deploy with before closing your current
+session. The commands in this document need Docker access: either that
+account is in the `docker` group, or prefix them with `sudo`.
 
 This installs Docker, mounts your Linode Block Storage volume at
 `/mnt/reports` (you'll be prompted for the device path — set that volume
@@ -158,6 +167,12 @@ the browser should prompt for the Basic Auth credentials from step 4,
 show a valid real certificate with no warnings, and load the viewer.
 
 ## Redeploying after a change
+
+> **This host is shared.** The compose file and Caddyfile carry two edits
+> that keep a second app (nventorium.com) online, and `up -d` recreates the
+> Caddy container from them. Before pulling, read [SHARED_HOST.md](./SHARED_HOST.md)
+> — in particular, never deploy from a branch missing those edits and never
+> run `docker compose down -v` (it deletes the certificates for both sites).
 
 ```bash
 git pull origin release
@@ -282,11 +297,44 @@ project's own history if useful as a reference).
    watch it in GitHub's Actions tab — `build`, `smoke-test`, then
    `deploy`, all green.
 
+## Resetting the Basic Auth password
+
+Caddy stores only a bcrypt hash, so a forgotten password can't be recovered —
+just replace the hash. The hash is full of `$` characters, which Docker
+Compose treats as variable references in `.env.production`, so each one must
+be doubled to `$$`; doing that by hand is error-prone (backslash escaping does
+not work), so script it. From `server/`, with a leading space on the first
+line so a default shell doesn't record the password in its history:
+
+```bash
+ HASH=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext 'the-new-password')
+ESCAPED=$(echo "$HASH" | sed 's/\$/$$/g')
+sed -i "s|^BASIC_AUTH_HASH=.*|BASIC_AUTH_HASH=${ESCAPED}|" .env.production
+```
+
+Check that Compose resolves it to a full 60-character hash, then recreate
+only Caddy:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml config | grep BASIC_AUTH_HASH | awk -F= '{print length($2)}'
+```
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d
+```
+
+Always pass **both** `--env-file .env.production` and `-f docker-compose.prod.yml`
+to every `docker compose` command here. Omitting either one doesn't fail —
+Compose warns that `DOMAIN`, `BASIC_AUTH_*` and `ACME_EMAIL` are "not set",
+defaults them to blank, and (for `up -d`) would recreate Caddy with a broken
+configuration.
+
 ## Backups
 
 Not automated yet. Reports (`/mnt/reports`) are the only real state this
-app holds — everything else is stateless (Caddy's certs are cheap to
-re-issue, secrets are recreatable from your own records). Worth a
+app holds — everything else is stateless (Caddy's certs are re-issuable, but
+the `caddy-data` volume now holds them for every site on the host, and
+re-issuing is rate-limited; secrets are recreatable from your own records). Worth a
 periodic `rsync`/`tar` of `/mnt/reports` off-server before it's holding
 data you'd be sad to lose, or rely on Linode Block Storage's own
 snapshot/backup offering directly on the volume.
@@ -301,3 +349,9 @@ snapshot/backup offering directly on the volume.
 - **No structured logging/error tracking.** `docker compose logs` is
   your only window into a production error right now.
 - **No automated backups** — see above.
+- **No cap on concurrent analysis runs**, on a host with 1 GB of RAM shared
+  with another app. See [SHARED_HOST.md](./SHARED_HOST.md) §4.
+- **The CI/CD deploy command pulls `release`**, a branch that doesn't exist
+  yet. When that pipeline is set up, make sure `release` contains the shared-host
+  edits (see SHARED_HOST.md §2) or the first automated deploy will drop the
+  second site.
